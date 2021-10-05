@@ -482,6 +482,12 @@ calculate_reward_for_txn(blockchain_txn_poc_receipts_v1, Txn, _End,
     Acc0 = poc_challenger_reward(Txn, Challenger, Vars),
     Acc1 = calculate_poc_challengee_rewards(Txn, Acc#{ poc_challenger => Acc0 }, Chain, Ledger, Vars),
     calculate_poc_witness_rewards(Txn, Acc1, Chain, Ledger, Vars);
+calculate_reward_for_txn(blockchain_txn_poc_receipts_v2, Txn, _End,
+                         #{ poc_challenger := Challenger } = Acc, Chain, Ledger, Vars) ->
+    Acc0 = poc_challenger_reward(Txn, Challenger, Vars),
+    Acc1 = calculate_poc_challengee_rewards(Txn, Acc#{ poc_challenger => Acc0 }, Chain, Ledger, Vars),
+    calculate_poc_witness_rewards(Txn, Acc1, Chain, Ledger, Vars);
+
 calculate_reward_for_txn(blockchain_txn_state_channel_close_v1, Txn, End, Acc, Chain, Ledger, Vars) ->
     calculate_dc_rewards(Txn, End, Acc, Chain, Ledger, Vars);
 calculate_reward_for_txn(Type, Txn, _End, Acc, _Chain, Ledger, _Vars) ->
@@ -512,7 +518,8 @@ consider_overage(Type, Txn, Acc, Ledger) ->
                                         Vars :: reward_vars() ) -> rewards_share_metadata().
 calculate_poc_challengee_rewards(Txn, #{ poc_challengee := ChallengeeMap } = Acc,
                                  Chain, Ledger, #{ var_map := VarMap } = Vars) ->
-    Path = blockchain_txn_poc_receipts_v1:path(Txn),
+    TxnType = blockchain_txn:type(Txn),
+    Path = TxnType:path(Txn),
     NewCM = poc_challengees_rewards_(Vars, Path, Path, Txn, Chain, Ledger, true, VarMap, ChallengeeMap),
     Acc#{ poc_challengee => NewCM }.
 
@@ -880,10 +887,11 @@ securities_rewards(Ledger, #{epoch_reward := EpochReward,
                              Acc :: rewards_share_map(),
                              Vars :: reward_vars() ) -> rewards_share_map().
 poc_challenger_reward(Txn, ChallengerRewards, #{poc_version := Version}) ->
-    Challenger = blockchain_txn_poc_receipts_v1:challenger(Txn),
+    TxnType = blockchain_txn:type(Txn),
+    Challenger = TxnType:challenger(Txn),
     I = maps:get(Challenger, ChallengerRewards, 0),
-    case blockchain_txn_poc_receipts_v1:check_path_continuation(
-           blockchain_txn_poc_receipts_v1:path(Txn)) of
+    case TxnType:check_path_continuation(
+           TxnType:path(Txn)) of
         true when is_integer(Version) andalso Version > 4 ->
             maps:put(Challenger, I+2, ChallengerRewards);
         _ ->
@@ -945,6 +953,7 @@ poc_challengees_rewards_(#{poc_version := Version}=Vars,
                          IsFirst,
                          VarMap,
                          Acc0) when Version >= 2 ->
+    TxnType = blockchain_txn:type(Txn),
     WitnessRedundancy = maps:get(witness_redundancy, Vars, undefined),
     DecayRate = maps:get(poc_reward_decay_rate, Vars, undefined),
     DensityTgtRes = maps:get(density_tgt_res, Vars, undefined),
@@ -963,7 +972,7 @@ poc_challengees_rewards_(#{poc_version := Version}=Vars,
         undefined ->
             Acc1 = case
                        Witnesses /= [] orelse
-                       blockchain_txn_poc_receipts_v1:check_path_continuation(Path)
+                       TxnType:check_path_continuation(Path)
                    of
                        true when is_integer(Version), Version > 4, IsFirst == true ->
                            %% while we don't have a receipt for this node, we do know
@@ -1008,7 +1017,7 @@ poc_challengees_rewards_(#{poc_version := Version}=Vars,
                 radio ->
                     Acc1 = case
                                Witnesses /= [] orelse
-                               blockchain_txn_poc_receipts_v1:check_path_continuation(Path)
+                               TxnType:check_path_continuation(Path)
                            of
                                true when is_integer(Version), Version > 4 ->
                                    %% this challengee both rx'd and tx'd over radio
@@ -1050,7 +1059,7 @@ poc_challengees_rewards_(#{poc_version := Version}=Vars,
                     %% the challengee did their job
                     Acc1 = case
                                Witnesses /= [] orelse
-                               blockchain_txn_poc_receipts_v1:check_path_continuation(Path)
+                               TxnType:check_path_continuation(Path)
                            of
                                false ->
                                    %% path did not continue, this is an 'all gray' path
@@ -1111,7 +1120,8 @@ normalize_reward_unit(_TxRewardUnitCap, Unit) -> Unit.
 normalize_reward_unit(Unit) when Unit > 1.0 -> 1.0;
 normalize_reward_unit(Unit) -> Unit.
 
--spec poc_witness_reward( Txn :: blockchain_txn_poc_receipts_v1:txn_poc_receipts(),
+-spec poc_witness_reward( Txn :: blockchain_txn_poc_receipts_v1:txn_poc_receipts() |
+                                 blockchain_txn_poc_receipts_v2:txn_poc_receipts(),
                           AccIn :: rewards_share_map(),
                           Chain :: blockchain:blockchain(),
                           Ledger :: blockchain_ledger_v1:ledger(),
@@ -1121,22 +1131,22 @@ poc_witness_reward(Txn, AccIn,
                    #{ poc_version := POCVersion,
                       var_map := VarMap } = Vars) when is_integer(POCVersion)
                                                        andalso POCVersion >= 9 ->
-
+    TxnType = blockchain_txn:type(Txn),
     WitnessRedundancy = maps:get(witness_redundancy, Vars, undefined),
     DecayRate = maps:get(poc_reward_decay_rate, Vars, undefined),
     DensityTgtRes = maps:get(density_tgt_res, Vars, undefined),
 
     try
         %% Get channels without validation
-        {ok, Channels} = blockchain_txn_poc_receipts_v1:get_channels(Txn, Chain),
-        Path = blockchain_txn_poc_receipts_v1:path(Txn),
+        {ok, Channels} = TxnType:get_channels(Txn, Chain),
+        Path = TxnType:path(Txn),
 
         %% Do the new thing for witness filtering
         lists:foldl(
                 fun(Elem, Acc1) ->
                         ElemPos = blockchain_utils:index_of(Elem, Path),
                         WitnessChannel = lists:nth(ElemPos, Channels),
-                        case blockchain_txn_poc_receipts_v1:valid_witnesses(Elem,
+                        case TxnType:valid_witnesses(Elem,
                                                                             WitnessChannel,
                                                                             Ledger) of
                             [] -> Acc1;
@@ -1208,9 +1218,10 @@ poc_witness_reward(Txn, AccIn,
 poc_witness_reward(Txn, AccIn, _Chain, Ledger,
                    #{ poc_version := POCVersion } = Vars) when is_integer(POCVersion)
                                                         andalso POCVersion > 4 ->
+    TxnType = blockchain_txn:type(Txn),
     lists:foldl(
       fun(Elem, A) ->
-              case blockchain_txn_poc_receipts_v1:good_quality_witnesses(Elem, Ledger) of
+              case TxnType:good_quality_witnesses(Elem, Ledger) of
                   [] ->
                       A;
                   GoodQualityWitnesses ->
@@ -1225,9 +1236,10 @@ poc_witness_reward(Txn, AccIn, _Chain, Ledger,
               end
       end,
       AccIn,
-      blockchain_txn_poc_receipts_v1:path(Txn)
+      TxnType:path(Txn)
      );
 poc_witness_reward(Txn, AccIn, _Chain, _Ledger, Vars) ->
+    TxnType = blockchain_txn:type(Txn),
     lists:foldl(
       fun(Elem, A) ->
               lists:foldl(
@@ -1240,7 +1252,7 @@ poc_witness_reward(Txn, AccIn, _Chain, _Ledger, Vars) ->
                 blockchain_poc_path_element_v1:witnesses(Elem))
       end,
       AccIn,
-      blockchain_txn_poc_receipts_v1:path(Txn)).
+      TxnType:path(Txn)).
 
 -spec normalize_witness_rewards( WitnessRewards :: rewards_share_map(),
                                  Vars :: reward_vars() ) -> rewards_map().
@@ -1433,7 +1445,8 @@ poc_witness_reward_unit(R, W, N) ->
     %% the value does not asympotically tend to 2.0, instead it tends to 0.0
     normalize_reward_unit(blockchain_utils:normalize_float((N - (1 - math:pow(R, (W - N))))/W)).
 
--spec legit_witnesses( Txn :: blockchain_txn_poc_receipts_v1:txn_poc_receipts(),
+-spec legit_witnesses( Txn :: blockchain_txn_poc_receipts_v1:txn_poc_receipts() |
+                              blockchain_txn_poc_receipts_v2:txn_poc_receipts(),
                        Chain :: blockchain:blockchain(),
                        Ledger :: blockchain_ledger_v1:ledger(),
                        Elem :: blockchain_poc_path_element_v1:poc_element(),
@@ -1441,14 +1454,15 @@ poc_witness_reward_unit(R, W, N) ->
                        Version :: pos_integer()
                      ) -> [blockchain_txn_poc_witnesses_v1:poc_witness()].
 legit_witnesses(Txn, Chain, Ledger, Elem, StaticPath, Version) ->
+    TxnType = blockchain_txn:type(Txn),
     case Version of
         V when is_integer(V), V >= 9 ->
             try
                 %% Get channels without validation
-                {ok, Channels} = blockchain_txn_poc_receipts_v1:get_channels(Txn, Chain),
+                {ok, Channels} = TxnType:get_channels(Txn, Chain),
                 ElemPos = blockchain_utils:index_of(Elem, StaticPath),
                 WitnessChannel = lists:nth(ElemPos, Channels),
-                ValidWitnesses = blockchain_txn_poc_receipts_v1:valid_witnesses(Elem, WitnessChannel, Ledger),
+                ValidWitnesses = TxnType:valid_witnesses(Elem, WitnessChannel, Ledger),
                 %% lager:info("ValidWitnesses: ~p",
                            %% [[blockchain_utils:addr2name(blockchain_poc_witness_v1:gateway(W)) || W <- ValidWitnesses]]),
                 ValidWitnesses
@@ -1457,7 +1471,7 @@ legit_witnesses(Txn, Chain, Ledger, Elem, StaticPath, Version) ->
                       []
             end;
         V when is_integer(V), V > 4 ->
-            blockchain_txn_poc_receipts_v1:good_quality_witnesses(Elem, Ledger);
+            TxnType:good_quality_witnesses(Elem, Ledger);
         _ ->
             blockchain_poc_path_element_v1:witnesses(Elem)
     end.
@@ -1550,9 +1564,9 @@ poc_challengers_rewards_2_test() ->
     ElemForA = blockchain_poc_path_element_v1:new(<<"a">>, ReceiptForA, []),
 
     Txns = [
-        blockchain_txn_poc_receipts_v1:new(<<"a">>, <<"Secret">>, <<"OnionKeyHash">>, []),
-        blockchain_txn_poc_receipts_v1:new(<<"b">>, <<"Secret">>, <<"OnionKeyHash">>, []),
-        blockchain_txn_poc_receipts_v1:new(<<"c">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA])
+        blockchain_txn_poc_receipts_v2:new(<<"a">>, <<"Secret">>, <<"OnionKeyHash">>, []),
+        blockchain_txn_poc_receipts_v2:new(<<"b">>, <<"Secret">>, <<"OnionKeyHash">>, []),
+        blockchain_txn_poc_receipts_v2:new(<<"c">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA])
     ],
     Vars = #{
         epoch_reward => 1000,
@@ -1619,13 +1633,13 @@ poc_challengees_rewards_3_test() ->
 
     Txns = [
         %% No rewards here, Only receipt with no witness or subsequent receipt
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForB, ElemForA]),  %% 1, 2
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForB, ElemForA]),  %% 1, 2
         %% Reward because of witness
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForAWithWitness]), %% 3
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForAWithWitness]), %% 3
         %% Reward because of next elem has receipt
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA, ElemForB, ElemForC]), %% 3, 2, 2
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA, ElemForB, ElemForC]), %% 3, 2, 2
         %% Reward because of witness (adding to make reward 50/50)
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForBWithWitness]) %% 3
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForBWithWitness]) %% 3
     ],
     Rewards = #{
         %% a gets 8 shares
@@ -1636,7 +1650,7 @@ poc_challengees_rewards_3_test() ->
         {gateway, poc_challengees, <<"c">>} => 44
     },
     ChallengeeShares = lists:foldl(fun(T, Acc) ->
-                                           Path = blockchain_txn_poc_receipts_v1:path(T),
+                                           Path = blockchain_txn_poc_receipts_v2:path(T),
                                            poc_challengees_rewards_(Vars, Path, Path, T, Chain, Ledger, true, #{}, Acc)
                                    end,
                                    #{},
@@ -1690,8 +1704,8 @@ poc_witnesses_rewards_test() ->
     Witness2 = blockchain_poc_witness_v1:new(<<"b">>, 1, -80, <<>>),
     Elem = blockchain_poc_path_element_v1:new(<<"c">>, <<"Receipt not undefined">>, [Witness1, Witness2]),
     Txns = [
-        blockchain_txn_poc_receipts_v1:new(<<"d">>, <<"Secret">>, <<"OnionKeyHash">>, [Elem, Elem]),
-        blockchain_txn_poc_receipts_v1:new(<<"e">>, <<"Secret">>, <<"OnionKeyHash">>, [Elem, Elem])
+        blockchain_txn_poc_receipts_v2:new(<<"d">>, <<"Secret">>, <<"OnionKeyHash">>, [Elem, Elem]),
+        blockchain_txn_poc_receipts_v2:new(<<"e">>, <<"Secret">>, <<"OnionKeyHash">>, [Elem, Elem])
     ],
 
     Rewards = #{{gateway,poc_witnesses,<<"a">>} => 25,
@@ -1805,13 +1819,13 @@ dc_rewards_v3_spillover_test() ->
 
     Txns = [
         %% No rewards here, Only receipt with no witness or subsequent receipt
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForB, ElemForA]),  %% 1, 2
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForB, ElemForA]),  %% 1, 2
         %% Reward because of witness
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForAWithWitness]), %% 3
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForAWithWitness]), %% 3
         %% Reward because of next elem has receipt
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA, ElemForB, ElemForC]), %% 3, 2, 2
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForA, ElemForB, ElemForC]), %% 3, 2, 2
         %% Reward because of witness (adding to make reward 50/50)
-        blockchain_txn_poc_receipts_v1:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForBWithWitness]) %% 3
+        blockchain_txn_poc_receipts_v2:new(<<"X">>, <<"Secret">>, <<"OnionKeyHash">>, [ElemForBWithWitness]) %% 3
     ],
 
 
