@@ -1513,6 +1513,6 @@ to_json_test() ->
     ?assertEqual(<<"f is for ffffff\0">>, base64:decode(maps:get(f, maps:get(vars, Json)))).
 
 validation_test() ->
-    'TODO-validation_test'.
+    error('TODO-validation_test').
 
 -endif.
